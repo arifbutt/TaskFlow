@@ -1,6 +1,6 @@
 'use client';
 
-import { Task, Note, Event, Project, KanbanColumn } from '@/lib/types';
+import { Task, Note, Event, Project, KanbanColumn, UserProfile } from '@/lib/types';
 
 const DB_NAME = 'taskflow';
 const DB_VERSION = 2;
@@ -64,6 +64,17 @@ export class IndexedDB {
   }
 
   private initializeSchema(db: IDBDatabase) {
+    // Create projects store
+    if (!db.objectStoreNames.contains('projects')) {
+      console.log('Creating projects store...');
+      const projectStore = db.createObjectStore('projects', { keyPath: 'id' });
+      projectStore.createIndex('status', 'status', { unique: false });
+      projectStore.createIndex('isFavorite', 'isFavorite', { unique: false });
+      projectStore.createIndex('createdAt', 'createdAt', { unique: false });
+      projectStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+      projectStore.createIndex('createdBy', 'createdBy', { unique: false });
+    }
+
     // Create tasks store
     if (!db.objectStoreNames.contains('tasks')) {
       console.log('Creating tasks store...');
@@ -72,6 +83,10 @@ export class IndexedDB {
       taskStore.createIndex('priority', 'priority', { unique: false });
       taskStore.createIndex('dueDate', 'dueDate', { unique: false });
       taskStore.createIndex('projectId', 'projectId', { unique: false });
+      taskStore.createIndex('parentTaskId', 'parentTaskId', { unique: false });
+      taskStore.createIndex('assigneeId', 'assigneeId', { unique: false });
+      taskStore.createIndex('createdAt', 'createdAt', { unique: false });
+      taskStore.createIndex('updatedAt', 'updatedAt', { unique: false });
     }
 
     // Create notes store
@@ -79,31 +94,41 @@ export class IndexedDB {
       console.log('Creating notes store...');
       const noteStore = db.createObjectStore('notes', { keyPath: 'id' });
       noteStore.createIndex('isPinned', 'isPinned', { unique: false });
+      noteStore.createIndex('isArchived', 'isArchived', { unique: false });
       noteStore.createIndex('projectId', 'projectId', { unique: false });
+      noteStore.createIndex('folderId', 'folderId', { unique: false });
+      noteStore.createIndex('createdAt', 'createdAt', { unique: false });
       noteStore.createIndex('updatedAt', 'updatedAt', { unique: false });
     }
 
-    // Create projects store
-    if (!db.objectStoreNames.contains('projects')) {
-      console.log('Creating projects store...');
-      const projectStore = db.createObjectStore('projects', { keyPath: 'id' });
-      projectStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+    // Create note_folders store
+    if (!db.objectStoreNames.contains('note_folders')) {
+      console.log('Creating note_folders store...');
+      const folderStore = db.createObjectStore('note_folders', { keyPath: 'id' });
+      folderStore.createIndex('parentId', 'parentId', { unique: false });
+      folderStore.createIndex('projectId', 'projectId', { unique: false });
+      folderStore.createIndex('order', 'order', { unique: false });
     }
 
-    // Create events store
-    if (!db.objectStoreNames.contains('events')) {
-      console.log('Creating events store...');
-      const eventStore = db.createObjectStore('events', { keyPath: 'id' });
+    // Create calendar_events store
+    if (!db.objectStoreNames.contains('calendar_events')) {
+      console.log('Creating calendar_events store...');
+      const eventStore = db.createObjectStore('calendar_events', { keyPath: 'id' });
       eventStore.createIndex('start', 'start', { unique: false });
       eventStore.createIndex('end', 'end', { unique: false });
+      eventStore.createIndex('isRecurring', 'isRecurring', { unique: false });
+      eventStore.createIndex('taskId', 'taskId', { unique: false });
       eventStore.createIndex('projectId', 'projectId', { unique: false });
     }
 
-    // Create profile store
-    if (!db.objectStoreNames.contains('profile')) {
-      console.log('Creating profile store...');
-      db.createObjectStore('profile', { keyPath: 'id' });
+    // Create users store
+    if (!db.objectStoreNames.contains('users')) {
+      console.log('Creating users store...');
+      const userStore = db.createObjectStore('users', { keyPath: 'id' });
+      userStore.createIndex('email', 'email', { unique: true });
     }
+
+    console.log('Database schema initialized');
   }
 
   private async ensureConnected() {
@@ -266,47 +291,112 @@ export class IndexedDB {
   async getEvents(projectId?: string): Promise<Event[]> {
     await this.ensureConnected();
     return new Promise((resolve, reject) => {
-      const store = this.getStore('events');
+      const store = this.getStore('calendar_events');
       const request = store.getAll();
-      request.onerror = () => reject(request.error);
+      
+      request.onerror = () => {
+        console.error('Error getting events:', request.error);
+        reject(request.error);
+      };
+      
       request.onsuccess = () => {
-        const events = request.result;
+        let events = request.result || [];
+        
+        // Filter by projectId if provided
         if (projectId) {
-          resolve(events.filter(event => event.projectId === projectId));
-        } else {
-          resolve(events);
+          events = events.filter((event: Event) => event.projectId === projectId);
         }
+        
+        resolve(events);
       };
     });
   }
 
-  async createEvent(event: Event): Promise<Event> {
+  async getEvent(id: string): Promise<Event | undefined> {
     await this.ensureConnected();
     return new Promise((resolve, reject) => {
-      const store = this.getStore('events', 'readwrite');
-      const request = store.add(event);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(event);
+      const store = this.getStore('calendar_events');
+      const request = store.get(id);
+      
+      request.onerror = () => {
+        console.error('Error getting event:', request.error);
+        reject(request.error);
+      };
+      
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
     });
   }
 
-  async updateEvent(event: Event): Promise<Event> {
+  async createEvent(event: Omit<Event, 'id'>): Promise<Event> {
     await this.ensureConnected();
     return new Promise((resolve, reject) => {
-      const store = this.getStore('events', 'readwrite');
-      const request = store.put(event);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(event);
+      const store = this.getStore('calendar_events', 'readwrite');
+      const newEvent: Event = {
+        ...event,
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      
+      const request = store.add(newEvent);
+      
+      request.onerror = () => {
+        console.error('Error creating event:', request.error);
+        reject(request.error);
+      };
+      
+      request.onsuccess = () => {
+        resolve(newEvent);
+      };
+    });
+  }
+
+  async updateEvent(updates: Partial<Event> & { id: string }): Promise<Event> {
+    await this.ensureConnected();
+    return new Promise(async (resolve, reject) => {
+      const existingEvent = await this.getEvent(updates.id);
+      
+      if (!existingEvent) {
+        reject(new Error(`Event with id ${updates.id} not found`));
+        return;
+      }
+      
+      const updatedEvent: Event = {
+        ...existingEvent,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      };
+      
+      const store = this.getStore('calendar_events', 'readwrite');
+      const request = store.put(updatedEvent);
+      
+      request.onerror = () => {
+        console.error('Error updating event:', request.error);
+        reject(request.error);
+      };
+      
+      request.onsuccess = () => {
+        resolve(updatedEvent);
+      };
     });
   }
 
   async deleteEvent(id: string): Promise<void> {
     await this.ensureConnected();
     return new Promise((resolve, reject) => {
-      const store = this.getStore('events', 'readwrite');
+      const store = this.getStore('calendar_events', 'readwrite');
       const request = store.delete(id);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
+      
+      request.onerror = () => {
+        console.error('Error deleting event:', request.error);
+        reject(request.error);
+      };
+      
+      request.onsuccess = () => {
+        resolve();
+      };
     });
   }
 

@@ -72,29 +72,34 @@ export function DashboardCalendar() {
         return;
       }
 
-      const event: Event = {
-        id: selectedEvent?.id || crypto.randomUUID(),
-        title: eventForm.title,
-        description: eventForm.description,
+      const eventData = {
+        title: eventForm.title.trim(),
+        description: eventForm.description || '',
         start: eventForm.start,
         end: eventForm.end,
         allDay: eventForm.allDay,
+        projectId: undefined, // You can set this based on your app's requirements
       };
 
       if (selectedEvent) {
-        await db.updateEvent(event);
-        setEvents(events.map(e => e.id === event.id ? event : e));
+        await db.updateEvent({
+          id: selectedEvent.id,
+          ...eventData,
+        });
+        setEvents(events.map(e => e.id === selectedEvent.id ? { ...e, ...eventData } : e));
         toast({
           title: 'Event updated successfully',
         });
       } else {
-        await db.createEvent(event);
-        setEvents([...events, event]);
+        const newEvent = await db.createEvent(eventData);
+        setEvents([...events, newEvent]);
         toast({
           title: 'Event created successfully',
         });
       }
 
+      setIsDialogOpen(false);
+      setSelectedEvent(null);
       setEventForm({
         title: '',
         description: '',
@@ -102,12 +107,11 @@ export function DashboardCalendar() {
         end: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
         allDay: false,
       });
-      setSelectedEvent(null);
-      setIsDialogOpen(false);
     } catch (error) {
+      console.error('Error saving event:', error);
       toast({
-        title: `Error ${selectedEvent ? 'updating' : 'creating'} event`,
-        description: 'Please try again later',
+        title: 'Error saving event',
+        description: error instanceof Error ? error.message : 'Please try again',
         variant: 'destructive',
       });
     }
