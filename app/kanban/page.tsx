@@ -47,26 +47,54 @@ export default function KanbanPage() {
   
   const { toast } = useToast();
   
-  useEffect(() => {
-    loadData();
-  }, []);
-  
   async function loadData() {
     try {
+      console.log('Connecting to database...');
+      await db.connect(); // Ensure connection is established
+      
+      console.log('Fetching projects...');
       const projects = await db.getProjects();
+      console.log('Projects found:', projects);
+      
       setProjects(projects);
       
       if (projects.length > 0) {
         const firstProject = projects[0];
+        console.log('Selected project:', firstProject);
+        
         setSelectedProject(firstProject);
-        setColumns(firstProject.columns);
+        setColumns(firstProject.columns || defaultColumns); // Fallback to default columns
+        
+        console.log('Fetching tasks...');
         const tasks = await db.getTasks(firstProject.id);
+        console.log('Tasks found:', tasks);
         setTasks(tasks);
+      } else {
+        console.log('No projects found, creating default project...');
+        // Create a default project if none exists
+        const defaultProject = {
+          id: `project-${Date.now()}`,
+          name: 'My Project',
+          description: 'Default project',
+          columns: defaultColumns,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        
+        console.log('Creating default project:', defaultProject);
+        await db.createProject(defaultProject);
+        
+        console.log('Default project created');
+        setProjects([defaultProject]);
+        setSelectedProject(defaultProject);
+        setColumns(defaultColumns);
+        setTasks([]);
       }
     } catch (error) {
+      console.error('Error in loadData:', error);
       toast({
         title: 'Error loading data',
-        description: 'Please try again later',
+        description: error instanceof Error ? error.message : 'Please try again later',
         variant: 'destructive',
       });
     } finally {
@@ -272,6 +300,10 @@ export default function KanbanPage() {
     }
   }
 
+  useEffect(() => {
+    loadData();
+  }, []);
+  
   if (isLoading) {
     return (
       <div className="space-y-6">

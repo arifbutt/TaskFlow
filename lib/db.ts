@@ -22,67 +22,112 @@ interface UserProfile {
 
 export class IndexedDB {
   private db: IDBDatabase | null = null;
+  private isConnecting = false;
+  private connectionPromise: Promise<void> | null = null;
 
   async connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    // If already connected, return
+    if (this.db) return;
+    
+    // If connection is in progress, return the existing promise
+    if (this.isConnecting && this.connectionPromise) {
+      return this.connectionPromise;
+    }
+
+    this.isConnecting = true;
+    
+    this.connectionPromise = new Promise((resolve, reject) => {
+      console.log('Opening IndexedDB connection...');
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-      request.onerror = () => reject(request.error);
+      request.onerror = (event) => {
+        console.error('Database error:', (event.target as IDBRequest).error);
+        this.isConnecting = false;
+        reject((event.target as IDBRequest).error);
+      };
+
       request.onsuccess = () => {
+        console.log('Database connection established');
         this.db = request.result;
+        this.isConnecting = false;
         resolve();
       };
 
       request.onupgradeneeded = (event) => {
+        console.log('Database upgrade needed, initializing schema...');
         const db = (event.target as IDBOpenDBRequest).result;
-
-        // Create tasks store
-        if (!db.objectStoreNames.contains('tasks')) {
-          const taskStore = db.createObjectStore('tasks', { keyPath: 'id' });
-          taskStore.createIndex('status', 'status', { unique: false });
-          taskStore.createIndex('priority', 'priority', { unique: false });
-          taskStore.createIndex('dueDate', 'dueDate', { unique: false });
-          taskStore.createIndex('projectId', 'projectId', { unique: false });
-        }
-
-        // Create notes store
-        if (!db.objectStoreNames.contains('notes')) {
-          const noteStore = db.createObjectStore('notes', { keyPath: 'id' });
-          noteStore.createIndex('isPinned', 'isPinned', { unique: false });
-          taskStore.createIndex('projectId', 'projectId', { unique: false });
-          noteStore.createIndex('updatedAt', 'updatedAt', { unique: false });
-        }
-
-        // Create events store
-        if (!db.objectStoreNames.contains('events')) {
-          const eventStore = db.createObjectStore('events', { keyPath: 'id' });
-          eventStore.createIndex('start', 'start', { unique: false });
-          eventStore.createIndex('end', 'end', { unique: false });
-          taskStore.createIndex('projectId', 'projectId', { unique: false });
-        }
-
-        // Create projects store
-        if (!db.objectStoreNames.contains('projects')) {
-          const projectStore = db.createObjectStore('projects', { keyPath: 'id' });
-          projectStore.createIndex('updatedAt', 'updatedAt', { unique: false });
-        }
-
-        // Create profile store
-        if (!db.objectStoreNames.contains('profile')) {
-          db.createObjectStore('profile', { keyPath: 'id' });
-        }
+        this.initializeSchema(db);
       };
     });
+
+    return this.connectionPromise;
+  }
+
+  private initializeSchema(db: IDBDatabase) {
+    // Create tasks store
+    if (!db.objectStoreNames.contains('tasks')) {
+      console.log('Creating tasks store...');
+      const taskStore = db.createObjectStore('tasks', { keyPath: 'id' });
+      taskStore.createIndex('status', 'status', { unique: false });
+      taskStore.createIndex('priority', 'priority', { unique: false });
+      taskStore.createIndex('dueDate', 'dueDate', { unique: false });
+      taskStore.createIndex('projectId', 'projectId', { unique: false });
+    }
+
+    // Create notes store
+    if (!db.objectStoreNames.contains('notes')) {
+      console.log('Creating notes store...');
+      const noteStore = db.createObjectStore('notes', { keyPath: 'id' });
+      noteStore.createIndex('isPinned', 'isPinned', { unique: false });
+      noteStore.createIndex('projectId', 'projectId', { unique: false });
+      noteStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+    }
+
+    // Create projects store
+    if (!db.objectStoreNames.contains('projects')) {
+      console.log('Creating projects store...');
+      const projectStore = db.createObjectStore('projects', { keyPath: 'id' });
+      projectStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+    }
+
+    // Create events store
+    if (!db.objectStoreNames.contains('events')) {
+      console.log('Creating events store...');
+      const eventStore = db.createObjectStore('events', { keyPath: 'id' });
+      eventStore.createIndex('start', 'start', { unique: false });
+      eventStore.createIndex('end', 'end', { unique: false });
+      eventStore.createIndex('projectId', 'projectId', { unique: false });
+    }
+
+    // Create profile store
+    if (!db.objectStoreNames.contains('profile')) {
+      console.log('Creating profile store...');
+      db.createObjectStore('profile', { keyPath: 'id' });
+    }
+  }
+
+  private async ensureConnected() {
+    if (!this.db) {
+      await this.connect();
+    }
   }
 
   private getStore(name: string, mode: IDBTransactionMode = 'readonly'): IDBObjectStore {
-    if (!this.db) throw new Error('Database not connected');
+    if (!this.db) {
+      throw new Error('Database not connected. Please call connect() first.');
+    }
+    
+    if (!this.db.objectStoreNames.contains(name)) {
+      throw new Error(`Store "${name}" does not exist in the database.`);
+    }
+    
     const transaction = this.db.transaction(name, mode);
     return transaction.objectStore(name);
   }
 
   // Projects CRUD
   async getProjects(): Promise<Project[]> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('projects');
       const request = store.getAll();
@@ -92,6 +137,7 @@ export class IndexedDB {
   }
 
   async createProject(project: Project): Promise<Project> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('projects', 'readwrite');
       const request = store.add(project);
@@ -101,6 +147,7 @@ export class IndexedDB {
   }
 
   async updateProject(project: Project): Promise<Project> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('projects', 'readwrite');
       const request = store.put(project);
@@ -110,6 +157,7 @@ export class IndexedDB {
   }
 
   async deleteProject(id: string): Promise<void> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('projects', 'readwrite');
       const request = store.delete(id);
@@ -120,6 +168,7 @@ export class IndexedDB {
 
   // Tasks CRUD
   async getTasks(projectId?: string): Promise<Task[]> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('tasks');
       const request = store.getAll();
@@ -136,6 +185,7 @@ export class IndexedDB {
   }
 
   async createTask(task: Task): Promise<Task> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('tasks', 'readwrite');
       const request = store.add(task);
@@ -145,6 +195,7 @@ export class IndexedDB {
   }
 
   async updateTask(task: Task): Promise<Task> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('tasks', 'readwrite');
       const request = store.put(task);
@@ -154,6 +205,7 @@ export class IndexedDB {
   }
 
   async deleteTask(id: string): Promise<void> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('tasks', 'readwrite');
       const request = store.delete(id);
@@ -164,6 +216,7 @@ export class IndexedDB {
 
   // Notes CRUD
   async getNotes(projectId?: string): Promise<Note[]> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('notes');
       const request = store.getAll();
@@ -180,6 +233,7 @@ export class IndexedDB {
   }
 
   async createNote(note: Note): Promise<Note> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('notes', 'readwrite');
       const request = store.add(note);
@@ -189,6 +243,7 @@ export class IndexedDB {
   }
 
   async updateNote(note: Note): Promise<Note> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('notes', 'readwrite');
       const request = store.put(note);
@@ -198,6 +253,7 @@ export class IndexedDB {
   }
 
   async deleteNote(id: string): Promise<void> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('notes', 'readwrite');
       const request = store.delete(id);
@@ -208,6 +264,7 @@ export class IndexedDB {
 
   // Events CRUD
   async getEvents(projectId?: string): Promise<Event[]> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('events');
       const request = store.getAll();
@@ -224,6 +281,7 @@ export class IndexedDB {
   }
 
   async createEvent(event: Event): Promise<Event> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('events', 'readwrite');
       const request = store.add(event);
@@ -233,6 +291,7 @@ export class IndexedDB {
   }
 
   async updateEvent(event: Event): Promise<Event> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('events', 'readwrite');
       const request = store.put(event);
@@ -242,6 +301,7 @@ export class IndexedDB {
   }
 
   async deleteEvent(id: string): Promise<void> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('events', 'readwrite');
       const request = store.delete(id);
@@ -252,6 +312,7 @@ export class IndexedDB {
 
   // Profile management
   async getProfile(): Promise<UserProfile | null> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('profile');
       const request = store.get('user');
@@ -261,6 +322,7 @@ export class IndexedDB {
   }
 
   async updateProfile(profile: UserProfile): Promise<UserProfile> {
+    await this.ensureConnected();
     return new Promise((resolve, reject) => {
       const store = this.getStore('profile', 'readwrite');
       const request = store.put(profile);
